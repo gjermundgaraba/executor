@@ -146,6 +146,19 @@ E2E_CLOUD_URL=http://127.0.0.1:<port> ../node_modules/.bin/vitest run --project 
 E2E_SELFHOST_URL=http://localhost:<port> ../node_modules/.bin/vitest run --project selfhost <file>
 ```
 
+To use an owned emulator control plane, set `E2E_EMULATOR_CONTROL_URL` to
+its base URL. The instance helper posts `{ service, instance }` to
+`/_emulate/instances` and uses the returned isolated provider URL. Without the
+override it keeps using each service's hosted `emulators.dev` control plane.
+The offline-refresh regression requires a published emulator build supporting
+`mcp.resourceScopes`, `mcp.authorizationServerScopes`, `mcp.oauth.refreshTokens`,
+and `mcp.oauth.accessTokenTtlSeconds`:
+
+```sh
+E2E_EMULATOR_CONTROL_URL=https://<owned-worker>.workers.dev \
+  bun run test:selfhost scenarios/mcp-oauth-offline-refresh.test.ts
+```
+
 For interactive work against a live instance (boot, mint identities, typed API
 calls, MCP calls, emulator ledger) use the dev CLI: `bun run cli` — full
 command list in [RUNNING.md](../RUNNING.md).

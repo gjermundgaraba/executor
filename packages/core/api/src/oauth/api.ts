@@ -236,6 +236,7 @@ const ProbeResponse = Schema.Struct({
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopesSupported: Schema.optional(Schema.Array(Schema.String)),
+  additionalAuthorizationScopes: Schema.optional(Schema.Array(Schema.String)),
   registrationEndpoint: Schema.optional(Schema.NullOr(Schema.String)),
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),
   clientIdMetadataDocumentSupported: Schema.optional(Schema.Boolean),

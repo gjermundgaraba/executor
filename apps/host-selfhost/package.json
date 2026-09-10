@@ -52,7 +52,7 @@
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
-    "@executor-js/emulate": "^0.14.0",
+    "@executor-js/emulate": "https://github.com/gjermundgaraba/emulate/releases/download/v0.14.1-custom.3/executor-js-emulate-0.14.1-custom.3.tgz",
     "@executor-js/vite-plugin": "workspace:*",
     "@tailwindcss/vite": "catalog:",
     "@tanstack/router-plugin": "^1.167.12",

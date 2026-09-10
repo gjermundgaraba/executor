@@ -392,6 +392,9 @@ export interface OAuthProbeResult {
    *  to the protected resource. */
   readonly resource?: string | null;
   readonly scopesSupported?: readonly string[];
+  /** Issuer protocol scopes to include alongside selected resource scopes during
+   *  registration, such as `offline_access` for renewable MCP connections. */
+  readonly additionalAuthorizationScopes?: readonly string[];
   /** Whether the server advertises dynamic client registration (RFC 7591). */
   readonly registrationEndpoint?: string | null;
   /** RFC 8414 `token_endpoint_auth_methods_supported`. Surfaced so DCR can pick

@@ -7,6 +7,7 @@ import {
   OAuthClientSlug,
   type IntegrationSlug,
   type OAuthGrant,
+  type OAuthProbeResult,
   type Owner,
   type TokenEndpointAuthMethod,
 } from "@executor-js/sdk/shared";
@@ -58,6 +59,8 @@ export interface OAuthClientFormPrefill {
    *  Seed the form's discovered state; a later in-form Discover replaces them,
    *  and they are only sent when no declared scopes exist. */
   readonly discoveredScopes?: readonly string[];
+  /** Issuer-advertised protocol scopes added to either resource scope source. */
+  readonly additionalAuthorizationScopes?: readonly string[];
   readonly grant?: OAuthGrant;
   /** Client id to seed (e.g. when editing an existing app). NOT a secret — the
    *  secret is never returned, so it is always re-entered. */
@@ -84,11 +87,28 @@ export const preferredManualTokenEndpointAuthMethod = (
 /** The scopes to register via DCR. The integration's DECLARED (template) scopes
  *  are authoritative and immutable, so they win. Otherwise the DISCOVERED set is
  *  used — seeded from a prior server probe and replaced by any in-form Discover —
- *  so re-discovering a different issuer can't register a stale set. */
+ *  so re-discovering a different issuer can't register a stale set. Protocol
+ *  scopes from the same probe supplement either resource scope source. */
 export const registrationScopes = (
   declaredScopes: readonly string[],
   discoveredScopes: readonly string[],
-): readonly string[] => (declaredScopes.length > 0 ? declaredScopes : discoveredScopes);
+  additionalAuthorizationScopes: readonly string[] = [],
+): readonly string[] => [
+  ...new Set([
+    ...(declaredScopes.length > 0 ? declaredScopes : discoveredScopes),
+    ...additionalAuthorizationScopes,
+  ]),
+];
+
+/** Issuer protocol hints apply only to the endpoints from the same discovery. */
+export const discoveredAuthorizationScopesForEndpoints = (
+  probe: OAuthProbeResult | null | undefined,
+  authorizationUrl: string | undefined,
+  tokenUrl: string | undefined,
+): readonly string[] =>
+  probe?.authorizationUrl === authorizationUrl && probe?.tokenUrl === tokenUrl
+    ? (probe?.additionalAuthorizationScopes ?? [])
+    : [];
 
 /** The `originIntegration` to send with a `createClient` payload. When the
  *  caller passes an explicit `intentIntegration` (edit flow: the app's
@@ -227,9 +247,20 @@ export function OAuthClientForm(props: {
   const [discoveredScopes, setDiscoveredScopes] = useState<readonly string[]>(
     prefill?.discoveredScopes ?? [],
   );
-  const visibleScopes = registrationScopes(declaredScopes, discoveredScopes);
+  const [additionalAuthorizationScopes, setAdditionalAuthorizationScopes] = useState<
+    readonly string[]
+  >(prefill?.additionalAuthorizationScopes ?? []);
+  const visibleScopes = registrationScopes(
+    declaredScopes,
+    discoveredScopes,
+    additionalAuthorizationScopes,
+  );
   const visibleScopesSource =
-    declaredScopes.length > 0 ? "Declared by integration" : "Discovered from server";
+    declaredScopes.length > 0
+      ? additionalAuthorizationScopes.length > 0
+        ? "Declared by integration and discovered from server"
+        : "Declared by integration"
+      : "Discovered from server";
   const [discovering, setDiscovering] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   // DCR (RFC 7591): the registration endpoint + advertised auth methods. Seeded
@@ -318,6 +349,7 @@ export function OAuthClientForm(props: {
     // precedence at registration, so a re-Discover reflects the latest server
     // without clobbering a declared set.
     setDiscoveredScopes(result.scopesSupported ?? []);
+    setAdditionalAuthorizationScopes(result.additionalAuthorizationScopes ?? []);
     // Capture DCR availability so the "Register automatically" path shows for a
     // pasted MCP/issuer URL without any client id/secret.
     setRegistrationEndpoint(result.registrationEndpoint ?? "");
@@ -345,7 +377,9 @@ export function OAuthClientForm(props: {
         resource: normalizedResource,
         // DCR sends the integration's declared scopes, or the discovered set when
         // none are declared, to the AS at registration (the app stores none).
-        scopes: [...registrationScopes(declaredScopes, discoveredScopes)],
+        scopes: [
+          ...registrationScopes(declaredScopes, discoveredScopes, additionalAuthorizationScopes),
+        ],
         tokenEndpointAuthMethodsSupported: authMethods,
         clientName: name.trim(),
         redirectUri: oauthCallbackUrl(),
@@ -682,9 +716,10 @@ export function OAuthClientForm(props: {
                 id="oauth-authorization-url"
                 placeholder="https://issuer.example.com/authorize"
                 value={authorizationUrl}
-                onChange={(e: React.ChangeEvent<HTMLInputElement>) =>
-                  setAuthorizationUrl(e.target.value)
-                }
+                onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                  setAuthorizationUrl(e.target.value);
+                  setAdditionalAuthorizationScopes([]);
+                }}
                 className="font-mono"
               />
             </div>
@@ -698,7 +733,10 @@ export function OAuthClientForm(props: {
               id="oauth-token-url"
               placeholder="https://issuer.example.com/token"
               value={tokenUrl}
-              onChange={(e: React.ChangeEvent<HTMLInputElement>) => setTokenUrl(e.target.value)}
+              onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
+                setTokenUrl(e.target.value);
+                setAdditionalAuthorizationScopes([]);
+              }}
               className="font-mono"
             />
           </div>

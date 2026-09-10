@@ -69,6 +69,11 @@ import {
   type SubjectTokenType,
   type TokenEndpointAuthMethod,
 } from "./oauth-client";
+import {
+  automaticAuthorizationScopes,
+  canonicalUrlString,
+  oauthMetadataMatchesClient,
+} from "./oauth-authorization-scopes";
 import type { OwnerBinding } from "./plugin";
 import type { CredentialProvider } from "./provider";
 import {
@@ -194,12 +199,16 @@ const startErrorFromEnterpriseManaged = (cause: EnterpriseManagedMintError): OAu
  *  are discovered from the server's metadata at connect (`discover`, used by
  *  MCP). The two are mutually exclusive by construction.
  *
- *  `discover` carries the integration's own discovery URL (the MCP endpoint)
- *  so scope discovery does not depend on the CLIENT having a persisted RFC
- *  8707 resource: a user may clear the client's resource (Entra v2 rejects
- *  the parameter, #1789) without losing scope discovery. */
+ *  Both policies retain the integration's discovery URL (the MCP endpoint),
+ *  when present, for issuer protocol scopes. Discovery does not depend on the
+ *  CLIENT having a persisted RFC 8707 resource: a user may clear the client's
+ *  resource (Entra v2 rejects the parameter, #1789) without losing discovery. */
 export type OAuthScopePolicy =
-  | { readonly kind: "scopes"; readonly scopes: readonly string[] }
+  | {
+      readonly kind: "scopes";
+      readonly scopes: readonly string[];
+      readonly discoveryUrl?: string;
+    }
   | { readonly kind: "discover"; readonly discoveryUrl: string };
 
 /** Everything the OAuth service needs from the executor: fuma access for the
@@ -569,20 +578,6 @@ const REDIRECT_URI_REQUIRED_MESSAGE =
   "to the executor. Pass `redirectUri` to createExecutor (hosts derive it from " +
   "the web base URL / request origin as `${webBaseUrl}${mountPrefix}/oauth/callback`).";
 
-const canonicalUrlString = (value: string): string => {
-  const url = new URL(value.trim());
-  url.hash = "";
-  return url.toString();
-};
-
-const oauthMetadataMatchesClient = (
-  client: Pick<LoadedOAuthClient, "authorizationUrl" | "tokenUrl">,
-  metadata: OAuthAuthorizationServerMetadata,
-): boolean =>
-  canonicalUrlString(metadata.authorization_endpoint) ===
-    canonicalUrlString(client.authorizationUrl) &&
-  canonicalUrlString(metadata.token_endpoint) === canonicalUrlString(client.tokenUrl);
-
 const isWellKnownOAuthMetadataUrl = (value: string): boolean => {
   const path = new URL(value.trim()).pathname.toLowerCase();
   return (
@@ -684,7 +679,6 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // EXPLICIT — no localhost default. `null` means this executor has no OAuth
   // callback; redirect-requiring flows fail loudly via `requireRedirectUri`.
   const redirectUri = deps.redirectUri;
-  const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy };
 
   // -------------------------------------------------------------------------
   // Enterprise-managed rollout seam.
@@ -721,27 +715,56 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       ? Effect.void
       : rollout.record(event).pipe(Effect.ignoreCause({ log: false }));
 
+  const readAuthorizationServer = (issuer: string) =>
+    discoverAuthorizationServerMetadata(issuer, {
+      endpointUrlPolicy: deps.endpointUrlPolicy,
+      httpClientLayer,
+    }).pipe(
+      Effect.map((result) => result?.metadata ?? null),
+      Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)),
+    );
+
+  // Share this attempt's reads without merging resource-scope and protocol-scope
+  // selection: they have different issuer predicates and failure semantics.
+  const makeAuthorizationDiscovery = (resource: string | null) =>
+    Effect.gen(function* () {
+      const protectedResource = yield* Effect.cached(
+        resource === null
+          ? Effect.succeed(null)
+          : discoverProtectedResourceMetadata(resource, {
+              endpointUrlPolicy: deps.endpointUrlPolicy,
+              httpClientLayer,
+            }),
+      );
+      const servers = new Map<string, OAuthAuthorizationServerMetadata | null>();
+      const authorizationServer = (issuer: string) =>
+        Effect.gen(function* () {
+          const prior = servers.get(issuer);
+          if (prior !== undefined) return prior;
+          const metadata = yield* readAuthorizationServer(issuer);
+          servers.set(issuer, metadata);
+          return metadata;
+        });
+      return { protectedResource, authorizationServer };
+    });
+  type AuthorizationDiscovery = Effect.Success<ReturnType<typeof makeAuthorizationDiscovery>>;
+
   const filterAuthorizationCodeScopes = (
     client: LoadedOAuthClient,
     requestedScopes: readonly string[],
+    discovery: AuthorizationDiscovery,
   ): Effect.Effect<readonly string[], never> =>
     Effect.gen(function* () {
       if (requestedScopes.length === 0) return requestedScopes;
       const resource = client.resource
-        ? yield* discoverProtectedResourceMetadata(client.resource, discoveryOptions).pipe(
-            Effect.catch(() => Effect.succeed(null)),
-            Effect.provide(httpClientLayer),
-          )
+        ? yield* discovery.protectedResource.pipe(Effect.catch(() => Effect.succeed(null)))
         : null;
       const issuer =
         resource?.metadata.authorization_servers?.[0] ?? new URL(client.authorizationUrl).origin;
-      const as = yield* discoverAuthorizationServerMetadata(issuer, discoveryOptions).pipe(
-        Effect.catch(() => Effect.succeed(null)),
-        Effect.provide(httpClientLayer),
-      );
-      if (!as || !oauthMetadataMatchesClient(client, as.metadata)) return requestedScopes;
-      return intersectScopes(requestedScopes, as.metadata.scopes_supported);
-    }).pipe(Effect.catch(() => Effect.succeed(requestedScopes)));
+      const metadata = yield* discovery.authorizationServer(issuer);
+      if (!metadata || !oauthMetadataMatchesClient(client, metadata)) return requestedScopes;
+      return intersectScopes(requestedScopes, metadata.scopes_supported);
+    });
 
   // Caps on server-controlled discovery input — a hostile or buggy server must
   // not be able to hang `oauth.start` or overflow the authorize URL.
@@ -774,15 +797,12 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   const firstReadableAuthorizationServer = (
     issuers: readonly string[],
     accept: (metadata: OAuthAuthorizationServerMetadata) => boolean,
+    read = readAuthorizationServer,
   ): Effect.Effect<OAuthAuthorizationServerMetadata | null> =>
     Effect.gen(function* () {
-      const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy, httpClientLayer };
       for (const issuer of issuers) {
-        const authServer = yield* discoverAuthorizationServerMetadata(
-          issuer,
-          discoveryOptions,
-        ).pipe(Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed(null)));
-        if (authServer && accept(authServer.metadata)) return authServer.metadata;
+        const metadata = yield* read(issuer);
+        if (metadata && accept(metadata)) return metadata;
       }
       return null;
     });
@@ -804,22 +824,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
   // Only when the resource is SILENT do we read the scopes advertised by the
   // authorization servers it NAMES (RFC 8414) — we never probe arbitrary URLs.
   const discoverScopesForResource = (
-    resource: string | null,
+    discovery: AuthorizationDiscovery,
   ): Effect.Effect<readonly string[], OAuthDiscoveryError> =>
     Effect.gen(function* () {
-      if (resource == null) {
-        return yield* new OAuthDiscoveryError({
-          message: "Cannot discover OAuth scopes: the client has no resource configured",
-        });
-      }
-      // `httpClientLayer` flows through `options` so discovery uses the host's
-      // configured client (discovery self-provides from `options.httpClientLayer`).
-      const discoveryOptions = { endpointUrlPolicy: deps.endpointUrlPolicy, httpClientLayer };
-
-      const protectedResource = yield* discoverProtectedResourceMetadata(
-        resource,
-        discoveryOptions,
-      );
+      const protectedResource = yield* discovery.protectedResource;
       const resourceScopes = protectedResource?.metadata.scopes_supported;
       if (resourceScopes !== undefined) return capScopes(resourceScopes);
 
@@ -831,12 +839,37 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
       const authServer = yield* firstReadableAuthorizationServer(
         authorizationServerIssuersFor(protectedResource),
         (metadata) => metadata.scopes_supported !== undefined,
+        discovery.authorizationServer,
       );
       return authServer?.scopes_supported === undefined
         ? []
         : capScopes(authServer.scopes_supported);
     }).pipe((sequence) =>
       withDiscoverySequenceTimeout(sequence, "OAuth scope discovery timed out"),
+    );
+
+  /** Optional protocol scopes come only from a resource-named issuer whose
+   *  endpoints match the selected app. Keep this separate from required resource
+   *  scope discovery: unavailable issuer metadata must not prevent authorization. */
+  const discoverAdditionalAuthorizationScopes = (
+    discovery: AuthorizationDiscovery,
+    client: LoadedOAuthClient,
+  ): Effect.Effect<readonly string[]> =>
+    Effect.gen(function* () {
+      const protectedResource = yield* discovery.protectedResource;
+      const metadata = yield* firstReadableAuthorizationServer(
+        authorizationServerIssuersFor(protectedResource),
+        (metadata) => oauthMetadataMatchesClient(client, metadata),
+        discovery.authorizationServer,
+      );
+      return automaticAuthorizationScopes({
+        resourceDiscovered: protectedResource !== null,
+        metadata,
+      });
+    }).pipe(
+      (sequence) =>
+        withDiscoverySequenceTimeout(sequence, "OAuth authorization scope discovery timed out"),
+      Effect.catchTag("OAuthDiscoveryError", () => Effect.succeed([])),
     );
 
   /** The RFC 8414 metadata of the authorization server that protects `resource`.
@@ -1728,6 +1761,9 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ),
         );
       const firstParty = firstPartyFlow ? firstPartyBySlug.get(String(input.client)) : undefined;
+      const discovery = yield* makeAuthorizationDiscovery(
+        client.resource ?? scopePolicy.discoveryUrl ?? null,
+      );
       const requestedScopes =
         scopePolicy.kind === "discover"
           ? yield* (() => {
@@ -1736,9 +1772,7 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
               // but it is a WIRE parameter the user may clear (Entra v2 rejects
               // `resource`, #1789) — the integration's own discovery URL then
               // keeps scope discovery working for a resource-less client.
-              const discovered = discoverScopesForResource(
-                client.resource ?? scopePolicy.discoveryUrl,
-              ).pipe(
+              const discovered = discoverScopesForResource(discovery).pipe(
                 Effect.mapError(
                   (cause) =>
                     new OAuthStartError({
@@ -1970,9 +2004,17 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
           ? dedupeScopes(firstParty.authorizationScopes)
           : scopePolicy.kind === "discover"
             ? requestedScopes
-            : yield* filterAuthorizationCodeScopes(client, requestedScopes);
+            : yield* filterAuthorizationCodeScopes(client, requestedScopes, discovery);
+      const automaticScopes =
+        scopePolicy.discoveryUrl !== undefined &&
+        firstParty?.authorizationScopes === undefined &&
+        (firstParty?.allowedScopes === undefined ||
+          firstParty.allowedScopes.includes("offline_access"))
+          ? yield* discoverAdditionalAuthorizationScopes(discovery, client)
+          : [];
       const completeAuthorizationScopes = dedupeScopes([
         ...authorizationRequestedScopes,
+        ...automaticScopes,
         ...(firstParty?.additionalAuthorizationScopes ?? []),
       ]);
 
@@ -2484,6 +2526,10 @@ export const makeOAuthService = (deps: OAuthServiceDeps): OAuthService => {
         // hint for the registration form on servers that omit PRM — where
         // `oauth.start` requests none — so the two can differ for those.
         scopesSupported: resource?.metadata.scopes_supported ?? as.metadata.scopes_supported,
+        additionalAuthorizationScopes: automaticAuthorizationScopes({
+          resourceDiscovered: resource !== null,
+          metadata: as.metadata,
+        }),
         registrationEndpoint: as.metadata.registration_endpoint ?? null,
         tokenEndpointAuthMethodsSupported: as.metadata.token_endpoint_auth_methods_supported,
         clientIdMetadataDocumentSupported:

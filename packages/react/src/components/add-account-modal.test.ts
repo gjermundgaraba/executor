@@ -1135,6 +1135,7 @@ describe("runDcrConnect", () => {
         tokenUrl: "https://auth.example.com/token",
         resource: "https://mcp.example.com/mcp",
         scopesSupported: ["mcp.read"],
+        additionalAuthorizationScopes: ["offline_access"],
         registrationEndpoint: "https://auth.example.com/register",
         tokenEndpointAuthMethodsSupported: ["none"],
       });
@@ -1181,7 +1182,7 @@ describe("runDcrConnect", () => {
     // Always the bare product name: brand-vetting servers (e.g. Mercury)
     // reject client_names containing their own brand.
     expect(registerArgs!.clientName).toBe("Executor");
-    expect(registerArgs!.scopes).toEqual(["mcp.read"]);
+    expect(registerArgs!.scopes).toEqual(["mcp.read", "offline_access"]);
     expect(registerArgs!.redirectUri).toBe("https://localhost:5394/api/oauth/callback");
     expect(registerArgs!.originIntegration).toBe(TEST_INTEGRATION);
     // Started with the minted client slug under the chosen owner.
@@ -1201,6 +1202,7 @@ describe("runDcrConnect", () => {
             authorizationUrl: "https://auth.example.com/authorize",
             tokenUrl: "https://auth.example.com/token",
             scopesSupported: ["probed.scope"],
+            additionalAuthorizationScopes: ["offline_access"],
             registrationEndpoint: "https://auth.example.com/register",
           }),
         register: (args: RegisterArgs): Promise<OAuthClientSlug | null> => {
@@ -1218,7 +1220,7 @@ describe("runDcrConnect", () => {
       },
     );
     expect(outcome.kind).toBe("started");
-    expect(registerArgs!.scopes).toEqual(["declared.scope"]);
+    expect(registerArgs!.scopes).toEqual(["declared.scope", "offline_access"]);
     // PRM named no `resource`, so the genuine discovery URL (MCP) seeds the
     // RFC 8707 resource indicator.
     expect(registerArgs!.resource).toBe("https://mcp.example.com/mcp");

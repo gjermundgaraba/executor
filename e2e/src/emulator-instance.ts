@@ -1,42 +1,46 @@
-import { Effect, Schedule } from "effect";
+import { Data, Effect, Schedule, Schema } from "effect";
+import {
+  FetchHttpClient,
+  HttpClient,
+  HttpClientRequest,
+  HttpClientResponse,
+} from "effect/unstable/http";
 
 /** The suite could not get an instance out of the hosted control plane. */
-export class EmulatorInstanceError extends Error {
-  readonly _tag = "EmulatorInstanceError";
-
-  constructor(
-    readonly service: string,
-    readonly reason: string,
-  ) {
-    super(`${service} emulator instance creation failed: ${reason}`);
-    this.name = "EmulatorInstanceError";
-  }
-}
+export class EmulatorInstanceError extends Data.TaggedError("EmulatorInstanceError")<{
+  readonly service: string;
+  readonly reason: string;
+  readonly cause?: unknown;
+}> {}
 
 // Bound each attempt: a hung connection to the edge must not eat the
 // scenario's whole timeout before the first retry.
 const ATTEMPT_TIMEOUT = "10 seconds";
 const RETRIES = 3;
 
-const requestInstance = (service: string, label: string) =>
-  Effect.tryPromise({
-    try: async (): Promise<string> => {
-      const response = await fetch(`https://${service}.emulators.dev/_emulate/instances`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ instance: label }),
-      });
-      if (!response.ok) {
-        throw new EmulatorInstanceError(service, `HTTP ${response.status}`);
-      }
-      const instance = (await response.json()) as { readonly providerBaseUrl: string };
-      return instance.providerBaseUrl;
-    },
-    catch: (cause) =>
-      cause instanceof EmulatorInstanceError
-        ? cause
-        : new EmulatorInstanceError(service, String(cause)),
-  });
+const InstanceResponse = Schema.Struct({ providerBaseUrl: Schema.String });
+
+const requestInstance = (service: string, label: string) => {
+  const controlUrl = process.env.E2E_EMULATOR_CONTROL_URL?.replace(/\/+$/, "");
+  return HttpClientRequest.post(
+    `${controlUrl || `https://${service}.emulators.dev`}/_emulate/instances`,
+  ).pipe(
+    HttpClientRequest.bodyJson(controlUrl ? { service, instance: label } : { instance: label }),
+    Effect.flatMap(HttpClient.execute),
+    Effect.flatMap(HttpClientResponse.filterStatusOk),
+    Effect.flatMap(HttpClientResponse.schemaBodyJson(InstanceResponse)),
+    Effect.map((instance) => instance.providerBaseUrl),
+    Effect.mapError(
+      (cause) =>
+        new EmulatorInstanceError({
+          service,
+          reason: "Control plane request failed",
+          cause,
+        }),
+    ),
+    Effect.provide(FetchHttpClient.layer),
+  );
+};
 
 // Hosted service hosts (e.g. resend.emulators.dev) are control plane only —
 // there is no shared default instance behind them. Every scenario creates its
@@ -57,7 +61,9 @@ export const createEmulatorInstance = (service: string, label = "e2e"): Effect.E
     Effect.timeoutOrElse({
       duration: ATTEMPT_TIMEOUT,
       orElse: () =>
-        Effect.fail(new EmulatorInstanceError(service, `no response in ${ATTEMPT_TIMEOUT}`)),
+        Effect.fail(
+          new EmulatorInstanceError({ service, reason: `no response in ${ATTEMPT_TIMEOUT}` }),
+        ),
     }),
     Effect.retry(
       Schedule.both(

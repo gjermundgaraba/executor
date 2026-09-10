@@ -4,6 +4,7 @@ import { Schema } from "effect";
 
 import {
   canSubmitOAuthClientForm,
+  discoveredAuthorizationScopesForEndpoints,
   initialOAuthClientOwner,
   preferredManualTokenEndpointAuthMethod,
   registrationScopes,
@@ -61,6 +62,43 @@ describe("registrationScopes", () => {
 
   it("returns empty when nothing is declared or discovered", () => {
     expect(registrationScopes([], [])).toEqual([]);
+  });
+
+  it("adds issuer protocol scopes without replacing declared resource scopes", () => {
+    expect(registrationScopes(["read"], ["unrelated"], ["offline_access"])).toEqual([
+      "read",
+      "offline_access",
+    ]);
+  });
+
+  it("deduplicates protocol scopes already present in discovered scopes", () => {
+    expect(registrationScopes([], ["read", "offline_access"], ["offline_access"])).toEqual([
+      "read",
+      "offline_access",
+    ]);
+  });
+});
+
+describe("discoveredAuthorizationScopesForEndpoints", () => {
+  const probe = {
+    authorizationUrl: "https://issuer.example/authorize",
+    tokenUrl: "https://issuer.example/token",
+    additionalAuthorizationScopes: ["offline_access"],
+  };
+
+  it("keeps protocol hints when fallback uses both discovered endpoints", () => {
+    expect(
+      discoveredAuthorizationScopesForEndpoints(probe, probe.authorizationUrl, probe.tokenUrl),
+    ).toEqual(["offline_access"]);
+  });
+
+  it.each([
+    ["https://other.example/authorize", probe.tokenUrl],
+    [probe.authorizationUrl, "https://other.example/token"],
+  ])("does not apply hints to a different endpoint pair (%s, %s)", (authorizationUrl, tokenUrl) => {
+    expect(discoveredAuthorizationScopesForEndpoints(probe, authorizationUrl, tokenUrl)).toEqual(
+      [],
+    );
   });
 });
 

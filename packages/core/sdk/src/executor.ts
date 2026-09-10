@@ -6630,7 +6630,11 @@ export const createExecutor = <const TPlugins extends readonly AnyPlugin[] = rea
               discoveryUrl: oauth.discoveryUrl,
             } satisfies OAuthScopePolicy;
           }
-          return { kind: "scopes", scopes: oauth?.scopes ?? [] } satisfies OAuthScopePolicy;
+          return {
+            kind: "scopes",
+            scopes: oauth?.scopes ?? [],
+            ...(oauth?.discoveryUrl !== undefined ? { discoveryUrl: oauth.discoveryUrl } : {}),
+          } satisfies OAuthScopePolicy;
         }),
       httpClientLayer: config.httpClientLayer,
       fetch: config.fetch,

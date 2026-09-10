@@ -82,6 +82,7 @@ import { cn } from "../lib/utils";
 import { buildUsageMap, connectionsUsingClient } from "../lib/oauth-client-usage";
 import {
   OAuthClientForm,
+  discoveredAuthorizationScopesForEndpoints,
   registrationScopes,
   type OAuthClientFormPrefill,
 } from "./oauth-client-form";
@@ -1038,7 +1039,11 @@ export async function runAutomaticOAuthConnect(
   }
 
   const slug = optimisticDcrClientSlug(probe.issuer ?? registrationEndpoint);
-  const scopes = registrationScopes(input.declaredScopes ?? [], probe.scopesSupported ?? []);
+  const scopes = registrationScopes(
+    input.declaredScopes ?? [],
+    probe.scopesSupported ?? [],
+    probe.additionalAuthorizationScopes ?? [],
+  );
   const minted = await deps.register({
     owner: input.owner,
     slug,
@@ -2784,6 +2789,15 @@ function AddAccountModalView(props: AddAccountModalProps) {
                     null,
                   scopes: method.oauth?.scopes,
                   discoveredScopes: oauthFallbackProbe?.scopesSupported,
+                  additionalAuthorizationScopes: discoveredAuthorizationScopesForEndpoints(
+                    oauthFallbackProbe,
+                    oauthHandoffPrefill?.authorizationUrl ??
+                      method.oauth?.authorizationUrl ??
+                      oauthFallbackProbe?.authorizationUrl,
+                    oauthHandoffPrefill?.tokenUrl ??
+                      method.oauth?.tokenUrl ??
+                      oauthFallbackProbe?.tokenUrl,
+                  ),
                   issuer: oauthFallbackProbe?.issuer ?? null,
                   registrationEndpoint:
                     method.oauth?.registrationEndpoint ??

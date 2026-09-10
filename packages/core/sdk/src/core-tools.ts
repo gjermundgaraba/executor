@@ -23,6 +23,7 @@ import {
 import { definePlugin, tool, type StaticToolSchema } from "./plugin";
 import { HealthCheckResult, isToolSyncHealth } from "./health-check";
 import { ToolPolicyActionSchema } from "./policies";
+import type { OAuthProbeResult } from "./oauth-client";
 import type { Tool } from "./tool";
 import { ToolResult } from "./tool-result";
 
@@ -289,16 +290,31 @@ const OAuthRemoveClientInput = Schema.Struct({
 const OAuthProbeInput = Schema.Struct({
   url: Schema.String,
 });
-const OAuthProbeOutput = Schema.Struct({
+export const OAuthProbeOutput = Schema.Struct({
   issuer: Schema.optional(Schema.NullOr(Schema.String)),
   authorizationUrl: Schema.String,
   tokenUrl: Schema.String,
   resource: Schema.optional(Schema.NullOr(Schema.String)),
   scopesSupported: Schema.optional(Schema.Array(Schema.String)),
+  additionalAuthorizationScopes: Schema.optional(Schema.Array(Schema.String)),
   registrationEndpoint: Schema.optional(Schema.NullOr(Schema.String)),
   tokenEndpointAuthMethodsSupported: Schema.optional(Schema.Array(Schema.String)),
   clientIdMetadataDocumentSupported: Schema.optional(Schema.Boolean),
 });
+/** Keep agent-facing discovery aligned with the SDK, including protocol scopes
+ *  needed when the agent registers a client using the probe's resource scopes. */
+export const oauthProbeToolResult = (result: OAuthProbeResult): typeof OAuthProbeOutput.Type => ({
+  issuer: result.issuer ?? null,
+  authorizationUrl: result.authorizationUrl,
+  tokenUrl: result.tokenUrl,
+  resource: result.resource ?? null,
+  scopesSupported: result.scopesSupported,
+  additionalAuthorizationScopes: result.additionalAuthorizationScopes,
+  registrationEndpoint: result.registrationEndpoint ?? null,
+  tokenEndpointAuthMethodsSupported: result.tokenEndpointAuthMethodsSupported,
+  clientIdMetadataDocumentSupported: result.clientIdMetadataDocumentSupported,
+});
+
 const OAuthStartInput = Schema.Struct({
   client: Schema.String,
   clientOwner: OwnerSchema,
@@ -920,16 +936,7 @@ export const coreToolsPlugin = definePlugin((options: CoreToolsPluginOptions = {
           inputSchema: OAuthProbeInputStd,
           outputSchema: OAuthProbeOutputStd,
           execute: (input: typeof OAuthProbeInput.Type, { ctx }) =>
-            Effect.map(ctx.oauth.probe({ url: input.url }), (result) => ({
-              issuer: result.issuer ?? null,
-              authorizationUrl: result.authorizationUrl,
-              tokenUrl: result.tokenUrl,
-              resource: result.resource ?? null,
-              scopesSupported: result.scopesSupported,
-              registrationEndpoint: result.registrationEndpoint ?? null,
-              tokenEndpointAuthMethodsSupported: result.tokenEndpointAuthMethodsSupported,
-              clientIdMetadataDocumentSupported: result.clientIdMetadataDocumentSupported,
-            })),
+            Effect.map(ctx.oauth.probe({ url: input.url }), oauthProbeToolResult),
         }),
         tool({
           name: "oauth.start",

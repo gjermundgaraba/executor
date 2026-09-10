@@ -23,6 +23,18 @@ are no `vendor/` submodules. Each fork is its own standalone repo
 develop on its `main`, publish a bump, then bump the dependency here. The
 `emulate` skill covers the emulator publish/deploy loop.
 
+## MCP OAuth renewal
+
+MCP authorization-code connections automatically request `offline_access` when
+the selected issuer advertises it. Resource permissions remain separate, and
+explicit built-in app scope restrictions still apply. The issuer decides
+whether to issue a refresh token.
+
+Reconnect an existing connection to request renewal credentials. If its older
+OAuth app registration is restricted to resource-only scopes, register a new
+OAuth app before reconnecting; reconnecting does not modify the server's
+existing client registration.
+
 ## Dev servers
 
 - Everything except desktop/cloud: `bun run dev` (turbo, from root)
