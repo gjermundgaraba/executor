@@ -1,5 +1,13 @@
 # @executor-js/plugin-provider-service-split
 
+## 0.0.23
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.9
+  - @executor-js/plugin-openapi@1.6.9
+
 ## 0.0.22
 
 ### Patch Changes

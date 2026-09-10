@@ -1,5 +1,17 @@
 # executor
 
+## 1.6.9
+
+### Patch Changes
+
+- [#1963](https://github.com/UsefulSoftwareCo/executor/pull/1963) [`eaa1f3a`](https://github.com/UsefulSoftwareCo/executor/commit/eaa1f3a57ffff88aede8e83783ea7ed4471aec1f) Thanks [@RhysSullivan](https://github.com/RhysSullivan)! - Bundle the Geist and Geist Mono fonts with the console instead of loading them from Google Fonts. The UI no longer stays blank when a self-hosted deployment cannot reach fonts.googleapis.com.
+
+- Updated dependencies []:
+  - @executor-js/sdk@1.6.9
+  - @executor-js/runtime-quickjs@1.6.9
+  - @executor-js/local@1.6.9
+  - @executor-js/api@1.4.72
+
 ## 1.6.8
 
 ### Patch Changes
